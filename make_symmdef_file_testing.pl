@@ -668,6 +668,16 @@ if ($ncs_mode == 1) {
 		open (OUTMON, ">$outmon");
 		open (OUTMDL, ">$outmdl");
 
+		#dimple adding stuff
+		use File::Copy;  # At the top of script if not already there
+
+		my $temp_file = "$input_file.tmp";
+
+		open(my $in_fh, '<', $input_file) or die "Cannot open $input_file for reading: $!";
+		open(my $temp_out_fh, '>', $temp_file) or die "Cannot open $temp_file for writing: $!";
+		
+		#done adding stuff
+
 		my $chnidx = 0;
 		my $chains = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890!@#$%^&*()-=_+;:,.<>";
 		foreach my $symop (@{ $symops }) {
@@ -1650,6 +1660,16 @@ if ($helix_mode == 1) {
     	open (OUTPDB, ">$outpdb");
     	open (OUTMON, ">$outmon");
     	open (OUTMDL, ">$outmdl");
+
+		#dimple adding stuff
+		use File::Copy;  # At the top of script if not already there
+
+		my $temp_file = "$input_file.tmp";
+
+		open(my $in_fh, '<', $input_file) or die "Cannot open $input_file for reading: $!";
+		open(my $temp_out_fh, '>', $temp_file) or die "Cannot open $temp_file for writing: $!";
+
+		#done adding stuff
  
 	    my $chnidx = 0;
     	my $chains = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890!@#$%^&*()-=_+;:,.<>";
@@ -1860,6 +1880,16 @@ if ($pseudo_mode == 1) {
 	}
 	open (OUTPDB, ">$outpdb");
 	open (OUTMON, ">$outmon");
+
+	#dimple adding stuff
+	use File::Copy;  # At the top of script if not already there
+
+	my $temp_file = "$input_file.tmp";
+	open(my $in_fh, '<', $input_file) or die "Cannot open $input_file for reading: $!";
+	open(my $temp_out_fh, '>', $temp_file) or die "Cannot open $temp_file for writing: $!";
+		
+	#done adding stuff
+
 	my $chnidx = 0;
 	my $chains = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890!@#$%^&*()-=_+;:,.<>";
 	foreach my $i (0..($#Rs)) {
