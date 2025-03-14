@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "rosetta-symmetry": {
+      "command": "/Users/ammachi/Developer/GitHub/MCP/mcp-rosetta/venv/bin/python",
+      "args": [
+        "/Users/ammachi/Developer/GitHub/MCP/mcp-rosetta/rosetta_symmetry_server.py"
+      ],
+      "env": {
+        "ROSETTA_SCRIPT_PATH": "/Users/ammachi/Developer/GitHub/MCP/mcp-rosetta/make_symmdef_file.pl",
+        "PDB_DIR": "/Users/ammachi/Developer/GitHub/MCP/mcp-rosetta/pdb_files",
+        "OUTPUT_DIR": "/Users/ammachi/Developer/GitHub/MCP/mcp-rosetta/pdb_output_files"
+      }
+    }
+  }
+}
