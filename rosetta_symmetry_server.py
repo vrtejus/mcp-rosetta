@@ -161,19 +161,38 @@ async def run_command(cmd: List[str], cwd: Optional[str] = None, env: Optional[D
     return stdout.decode(), stderr.decode(), process.returncode
 
 def create_rosetta_options_file(options: Dict[str, Any], output_path: str) -> str:
-    # Set of keys that should be separated by a space rather than a colon.
-    space_separated_keys = {"database", "fasta", "fasta_heavy", "fasta_light", "in:file:s", "in:file:extra_res_fa", "in:file:native"}
+    """
+    Write Rosetta options to a file in the proper format.
+    
+    By default, a space is used between the flag and its value.
+    Only keys explicitly listed in colon_keys will use a colon as the separator.
+    
+    Values containing whitespace are enclosed in quotes.
+    """
+    # Keys that require a colon separator.
+    # (Remove "nstruct" so that it defaults to space.)
+    colon_keys = {
+        "antibody:do_homology_modeling",
+        "antibody:refine",
+        "ex1",
+        "ex2",
+        # Add any other keys that need a colon here.
+    }
     
     with open(output_path, "w") as f:
         for key, value in options.items():
             if value is None:
                 f.write(f"-{key}\n")
             else:
-                if key in space_separated_keys:
-                    f.write(f"-{key} {value}\n")
-                else:
-                    f.write(f"-{key}:{value}\n")
+                # Default separator is a space unless the key is in colon_keys.
+                sep = ":" if key in colon_keys else " "
+                value_str = str(value)
+                # Enclose value in quotes if it contains whitespace.
+                if " " in value_str:
+                    value_str = f'"{value_str}"'
+                f.write(f"-{key}{sep}{value_str}\n")
     return output_path
+
 
 
 # =============================================================================
@@ -382,16 +401,18 @@ async def antibody_setup(
     light_chain: str = None,
     heavy_chain_file: str = None,
     light_chain_file: str = None,
+    fasta_file: str = None,
     ctx: Context = None
 ) -> str:
     """Set up an antibody modeling project with heavy and light chain sequences
     
     Args:
         project_id: ID of the project
-        heavy_chain: Amino acid sequence of the heavy chain (optional if heavy_chain_file is provided)
-        light_chain: Amino acid sequence of the light chain (optional if light_chain_file is provided)
-        heavy_chain_file: Path to a FASTA file containing the heavy chain sequence (optional)
-        light_chain_file: Path to a FASTA file containing the light chain sequence (optional)
+        heavy_chain: Amino acid sequence of the heavy chain (optional if fasta_file or heavy_chain_file is provided)
+        light_chain: Amino acid sequence of the light chain (optional if fasta_file or light_chain_file is provided)
+        heavy_chain_file: Path to a FASTA file containing the heavy chain sequence (optional, deprecated)
+        light_chain_file: Path to a FASTA file containing the light chain sequence (optional, deprecated)
+        fasta_file: Path to a combined FASTA file containing both heavy and light chain sequences (optional)
         
     Returns:
         Confirmation message
@@ -404,63 +425,115 @@ async def antibody_setup(
     if project.type != ProjectType.ANTIBODY:
         return f"Error: Project '{project_id}' is not an antibody project."
     
-    # Handle heavy chain
-    heavy_file_path = os.path.join(project.working_dir, "heavy.fasta")
+    # Combined FASTA file path
+    combined_file_path = os.path.join(project.working_dir, "combined.fasta")
+    heavy_chain_length = 0
+    light_chain_length = 0
     
-    if heavy_chain_file:
+    # Handle provided combined FASTA file
+    if fasta_file:
         # Validate that the path exists
-        if not os.path.exists(heavy_chain_file):
-            return f"Error: Heavy chain file at path '{heavy_chain_file}' not found."
+        if not os.path.exists(fasta_file):
+            return f"Error: FASTA file at path '{fasta_file}' not found."
         
         try:
-            shutil.copy(heavy_chain_file, heavy_file_path)
-            logger.info(f"Copied heavy chain file from {heavy_chain_file} to {heavy_file_path}")
+            shutil.copy(fasta_file, combined_file_path)
+            logger.info(f"Copied combined FASTA file from {fasta_file} to {combined_file_path}")
             
-            # Extract sequence length for reporting
-            with open(heavy_file_path, 'r') as f:
+            # Extract sequence lengths for reporting
+            with open(combined_file_path, 'r') as f:
                 content = f.read()
-                seq_lines = [line.strip() for line in content.split('\n') if line.strip() and not line.startswith('>')]
-                heavy_chain_length = sum(len(line) for line in seq_lines)
+                current_chain = None
+                heavy_seq_lines = []
+                light_seq_lines = []
+                
+                for line in content.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    if line.startswith('>'):
+                        # Check if this is a heavy or light chain header
+                        lower_line = line.lower()
+                        if 'heavy' in lower_line or 'h_chain' in lower_line or 'hchain' in lower_line:
+                            current_chain = 'heavy'
+                        elif 'light' in lower_line or 'l_chain' in lower_line or 'lchain' in lower_line:
+                            current_chain = 'light'
+                        else:
+                            # Default to sequence order: first is heavy, second is light
+                            if not heavy_seq_lines and not light_seq_lines:
+                                current_chain = 'heavy'
+                            else:
+                                current_chain = 'light'
+                    else:
+                        # Add sequence line to appropriate chain
+                        if current_chain == 'heavy':
+                            heavy_seq_lines.append(line)
+                        elif current_chain == 'light':
+                            light_seq_lines.append(line)
+                
+                heavy_chain_length = sum(len(line) for line in heavy_seq_lines)
+                light_chain_length = sum(len(line) for line in light_seq_lines)
+                
+                # Check if we found both chains
+                if not heavy_chain_length or not light_chain_length:
+                    return "Error: Could not identify both heavy and light chains in the provided FASTA file."
+                
         except Exception as e:
-            return f"Error copying heavy chain file: {str(e)}"
-    elif heavy_chain:
-        # Write the sequence to a FASTA file
-        with open(heavy_file_path, "w") as f:
-            f.write(f">heavy_chain\n{heavy_chain}\n")
-        heavy_chain_length = len(heavy_chain)
-    else:
-        return "Error: Either heavy_chain or heavy_chain_file must be provided."
+            return f"Error processing FASTA file: {str(e)}"
     
-    # Handle light chain
-    light_file_path = os.path.join(project.working_dir, "light.fasta")
-    
-    if light_chain_file:
-        # Validate that the path exists
-        if not os.path.exists(light_chain_file):
-            return f"Error: Light chain file at path '{light_chain_file}' not found."
+    # Handle legacy separate chain inputs 
+    elif (heavy_chain_file or heavy_chain) and (light_chain_file or light_chain):
+        # Process heavy chain
+        heavy_seq = None
+        if heavy_chain_file:
+            # Validate that the path exists
+            if not os.path.exists(heavy_chain_file):
+                return f"Error: Heavy chain file at path '{heavy_chain_file}' not found."
+            
+            try:
+                # Read the heavy chain file
+                with open(heavy_chain_file, 'r') as f:
+                    content = f.read()
+                    seq_lines = [line.strip() for line in content.split('\n') if line.strip() and not line.startswith('>')]
+                    heavy_seq = ''.join(seq_lines)
+                    heavy_chain_length = len(heavy_seq)
+            except Exception as e:
+                return f"Error reading heavy chain file: {str(e)}"
+        elif heavy_chain:
+            heavy_seq = heavy_chain
+            heavy_chain_length = len(heavy_chain)
         
-        try:
-            shutil.copy(light_chain_file, light_file_path)
-            logger.info(f"Copied light chain file from {light_chain_file} to {light_file_path}")
+        # Process light chain
+        light_seq = None
+        if light_chain_file:
+            # Validate that the path exists
+            if not os.path.exists(light_chain_file):
+                return f"Error: Light chain file at path '{light_chain_file}' not found."
             
-            # Extract sequence length for reporting
-            with open(light_file_path, 'r') as f:
-                content = f.read()
-                seq_lines = [line.strip() for line in content.split('\n') if line.strip() and not line.startswith('>')]
-                light_chain_length = sum(len(line) for line in seq_lines)
-        except Exception as e:
-            return f"Error copying light chain file: {str(e)}"
-    elif light_chain:
-        # Write the sequence to a FASTA file
-        with open(light_file_path, "w") as f:
-            f.write(f">light_chain\n{light_chain}\n")
-        light_chain_length = len(light_chain)
+            try:
+                # Read the light chain file
+                with open(light_chain_file, 'r') as f:
+                    content = f.read()
+                    seq_lines = [line.strip() for line in content.split('\n') if line.strip() and not line.startswith('>')]
+                    light_seq = ''.join(seq_lines)
+                    light_chain_length = len(light_seq)
+            except Exception as e:
+                return f"Error reading light chain file: {str(e)}"
+        elif light_chain:
+            light_seq = light_chain
+            light_chain_length = len(light_chain)
+        
+        # Create combined FASTA file
+        with open(combined_file_path, "w") as f:
+            f.write(f">heavy_chain\n{heavy_seq}\n>light_chain\n{light_seq}\n")
+        
+        logger.info(f"Created combined FASTA file at {combined_file_path}")
     else:
-        return "Error: Either light_chain or light_chain_file must be provided."
+        return "Error: Either a combined FASTA file or both heavy and light chain inputs must be provided."
     
-    # Update project with input files
-    project.add_input_file("heavy_chain", heavy_file_path)
-    project.add_input_file("light_chain", light_file_path)
+    # Update project with combined input file
+    project.add_input_file("fasta", combined_file_path)
     
     # Save project state
     save_project_state()
@@ -483,6 +556,7 @@ async def run_antibody_modeling(
         num_models: Number of models to generate (default: 10)
         use_homology_models: Whether to use homology models for CDR loops (default: True)
         refine_models: Whether to refine the final models (default: True)
+        custom_antibody_path: Optional path to a custom antibody executable
         
     Returns:
         Summary of the modeling run
@@ -496,8 +570,8 @@ async def run_antibody_modeling(
         return f"Error: Project '{project_id}' is not an antibody project."
     
     # Check if required input files exist
-    if "heavy_chain" not in project.input_files or "light_chain" not in project.input_files:
-        return "Error: Heavy and light chain sequences are required. Run antibody_setup first."
+    if "fasta" not in project.input_files:
+        return "Error: Antibody sequence file is required. Run antibody_setup first."
     
     # Update project parameters
     project.add_parameter("num_models", num_models)
@@ -510,27 +584,25 @@ async def run_antibody_modeling(
     # Create options file
     options = {
         "database": ROSETTA_DB_PATH,
-        "fasta": None,  # Using flags without values
-        "fasta_heavy": project.input_files["heavy_chain"],
-        "fasta_light": project.input_files["light_chain"],
+        "fasta": project.input_files["fasta"],
         "out:path:all": project.working_dir,
         "out:prefix": "model_",
         "nstruct": num_models,
-        "antibody:auto_generate_kink_constraint": None,
-        "antibody:auto_generate_length_constraint": None
+        "antibody:auto_generate_h3_kink_constraint": None,
+        # "antibody:auto_generate_length_constraint": None
     }
     
     if not use_homology_models:
         options["antibody:do_homology_modeling"] = "false"
     
-    if refine_models:
-        options["antibody:refine"] = None
+    # if refine_models:
+    #     options["antibody:refine"] = None
     
     options_file = os.path.join(project.working_dir, "antibody_options.txt")
     create_rosetta_options_file(options, options_file)
     
     # Set antibody executable path
-    antibody_path = "/Users/ammachi/Downloads/rosetta-binary/main/source/bin/antibody.static.macosclangrelease"
+    antibody_path = custom_antibody_path if custom_antibody_path else "/Users/ammachi/Downloads/rosetta-binary/main/source/bin/antibody.static.macosclangrelease"
 
     logger.info(f"Using antibody executable at: {antibody_path}")
     if ctx:
