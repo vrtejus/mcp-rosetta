@@ -911,7 +911,7 @@ async def prepare_ligand_params(
     ctx: Context = None
 ) -> str:
     """Generate Rosetta parameter files for a ligand
-    
+
     Args:
         project_id: ID of the project
         ligand_name: Three-letter code for the ligand (default: LIG)
@@ -942,42 +942,46 @@ async def prepare_ligand_params(
     script_path = os.path.join(project.working_dir, "generate_params.py")
     
     with open(script_path, "w") as f:
-        f.write("""
+        f.write(f"""#!/usr/bin/env python
 import os
 import sys
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-# Input SDF file
+# Input SDF file, ligand name, and output params file path are provided as command-line arguments.
 sdf_file = sys.argv[1]
 ligand_name = sys.argv[2]
 output_params = sys.argv[3]
 
-# Read the molecule
+# Read the molecule from the SDF file.
 mol = Chem.SDMolSupplier(sdf_file)[0]
 if mol is None:
     print("Error: Could not read molecule from SDF file")
     sys.exit(1)
 
-# Add hydrogen atoms
+# Add hydrogen atoms.
 mol = Chem.AddHs(mol)
 
-# Generate 3D coordinates if not present
+# Generate 3D coordinates if they are not already present.
 if not mol.GetNumConformers():
     AllChem.EmbedMolecule(mol)
     AllChem.UFFOptimizeMolecule(mol)
 
-# Write the molecule to PDB format
+# Write the molecule to a PDB file.
 pdb_file = os.path.splitext(sdf_file)[0] + ".pdb"
 Chem.MolToPDBFile(mol, pdb_file)
 
-# Run molfile_to_params.py script
-os.system(f"python {os.environ.get('ROSETTA_SCRIPTS_PATH', '')}/python/apps/public/molfile_to_params.py -n {ligand_name} -p {output_params} {pdb_file}")
+# Build the path to the batch_molfile_to_params.py script.
+rosetta_bin = os.environ.get('ROSETTA_BIN_PATH', '')
+molfile_to_params_path = os.path.join(rosetta_bin, "scripts", "python", "public", "batch_molfile_to_params.py")
 
-print(f"Params file generated: {output_params}")
+# Run the batch molfile-to-params command.
+os.system(f"python {{molfile_to_params_path}} -n {{ligand_name}} -p {{output_params}} {{pdb_file}}")
+
+print(f"Params file generated: {{output_params}}")
 """)
     
-    # Execute script
+    # Execute the generated script
     cmd = [
         "python",
         script_path,
@@ -1017,6 +1021,7 @@ print(f"Params file generated: {output_params}")
         error_msg = f"Error generating ligand parameters: {str(e)}"
         logger.error(error_msg)
         return error_msg
+
 
 @mcp.tool()
 async def run_interface_design(
