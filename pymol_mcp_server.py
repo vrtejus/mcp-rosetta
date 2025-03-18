@@ -325,40 +325,6 @@ def load_pdb(ctx: Context, pdb_id: str) -> str:
         logger.error(f"Error in load_pdb tool: {str(e)}")
         return f"Error loading PDB {pdb_id}: {str(e)}"
 
-# Tool: Render an image
-@mcp.tool()
-def render_image(
-    ctx: Context,
-    filename: str,
-    width: int = 1200,
-    height: int = 900,
-    ray: bool = True,
-    quiet: bool = False
-) -> str:
-    """
-    Render an image in PyMOL.
-    
-    Parameters:
-    - filename: Output filename (with path)
-    - width: Image width in pixels
-    - height: Image height in pixels
-    - ray: Whether to use ray tracing (higher quality)
-    - quiet: Suppress PyMOL output
-    """
-    try:
-        pymol = get_pymol_connection()
-        # Create PyMOL code to render the image
-        code = f"cmd.png('{filename}', {width}, {height}, ray={int(ray)}, quiet={int(quiet)})"
-        response = pymol.send_command(code)
-        
-        if response.get("status") == "success":
-            return f"Image rendered to {filename}"
-        else:
-            return f"Error rendering image: {response.get('message', 'Unknown error')}"
-    except Exception as e:
-        logger.error(f"Error in render_image tool: {str(e)}")
-        return f"Error rendering image: {str(e)}"
-
 # Tool: Apply a visualization preset
 @mcp.tool()
 def apply_visualization(
@@ -542,7 +508,6 @@ def pymol_tips() -> str:
 
 3. For common operations, use the specialized tools like:
    - load_pdb: Load PDB files directly from the PDB database
-   - render_image: Generate high-quality images
    - apply_visualization: Apply predefined visualization styles
    - get_object_list: List all loaded objects
    - get_sequence: Get the amino acid sequence of a protein
