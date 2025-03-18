@@ -68,15 +68,38 @@ class PyMOLConnection:
             
             # Wait for response
             self.sock.settimeout(10.0)  # 10 second timeout
-            response_data = self.sock.recv(4096)
             
-            if not response_data:
+            # Improved response handling - receive until we get a complete response
+            chunks = []
+            while True:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                
+                # Try to parse the response to see if it's complete
+                try:
+                    buffer = b''.join(chunks)
+                    response = json.loads(buffer.decode('utf-8'))
+                    return response
+                except json.JSONDecodeError:
+                    # Incomplete JSON, continue receiving
+                    continue
+            
+            # If we got here without returning, try to parse whatever we have
+            if chunks:
+                buffer = b''.join(chunks)
+                try:
+                    response = json.loads(buffer.decode('utf-8'))
+                    return response
+                except json.JSONDecodeError:
+                    logger.error("Received incomplete JSON response")
+                    raise Exception("Incomplete response from PyMOL")
+            else:
                 logger.error("No response received from PyMOL")
                 self.sock = None
                 raise ConnectionError("Connection closed by PyMOL")
             
-            response = json.loads(response_data.decode('utf-8'))
-            return response
         except socket.timeout:
             logger.error("Socket timeout while waiting for response from PyMOL")
             self.sock = None
@@ -162,17 +185,35 @@ mcp = FastMCP(
 @mcp.tool()
 def execute_pymol(ctx: Context, code: str) -> str:
     """
-    Execute a PyMOL command.
+    Execute a PyMOL command and return the output.
     
     Parameters:
     - code: The PyMOL Python code to execute
+    
+    Returns:
+    The output from executing the code in PyMOL
     """
     try:
         pymol = get_pymol_connection()
         response = pymol.send_command(code)
         
         if response.get("status") == "success":
-            return f"PyMOL command executed successfully"
+            # Extract the result from the response
+            result = response.get("result", {})
+            
+            # Check if it's a dictionary with output
+            if isinstance(result, dict):
+                if result.get("executed", False):
+                    output = result.get("output", "No output returned")
+                    return output
+                else:
+                    error = result.get("error", "Unknown error")
+                    return f"Error executing PyMOL command: {error}"
+            # If it's a string, just return it
+            elif isinstance(result, str):
+                return result
+            else:
+                return f"PyMOL command executed successfully"
         else:
             return f"Error executing PyMOL command: {response.get('message', 'Unknown error')}"
     except Exception as e:
@@ -189,12 +230,77 @@ def get_pymol_version(ctx: Context) -> str:
         response = pymol.send_command(code)
         
         if response.get("status") == "success":
-            return f"Command sent to get PyMOL version. Check PyMOL console for output."
+            # Extract the result from the response
+            result = response.get("result", {})
+            
+            # Check if it's a dictionary with output
+            if isinstance(result, dict) and "output" in result:
+                return f"PyMOL version: {result['output'].strip()}"
+            else:
+                return f"Command sent to get PyMOL version. Check PyMOL console for output."
         else:
             return f"Error getting PyMOL version: {response.get('message', 'Unknown error')}"
     except Exception as e:
         logger.error(f"Error in get_pymol_version tool: {str(e)}")
         return f"Error getting PyMOL version: {str(e)}"
+
+# Tool: Get result of PyMOL command with output capture
+@mcp.tool()
+def get_pymol_output(ctx: Context, code: str) -> str:
+    """
+    Execute a PyMOL command and specifically capture the output.
+    
+    This tool is designed to execute commands that generate output and return that output.
+    
+    Parameters:
+    - code: The PyMOL Python code to execute
+    
+    Returns:
+    The captured output from the PyMOL command
+    """
+    try:
+        pymol = get_pymol_connection()
+        
+        # Wrap the code to explicitly capture output
+        wrapped_code = f"""
+import io
+import sys
+from contextlib import redirect_stdout
+
+# Capture stdout
+output_buffer = io.StringIO()
+with redirect_stdout(output_buffer):
+    # Execute the user's code
+    {code}
+
+# Store the output in a special variable that will be returned
+_result = output_buffer.getvalue()
+"""
+        
+        response = pymol.send_command(wrapped_code)
+        
+        if response.get("status") == "success":
+            # Extract the result from the response
+            result = response.get("result", {})
+            
+            # Check if it's a dictionary with output
+            if isinstance(result, dict):
+                if result.get("executed", False):
+                    output = result.get("output", "").strip()
+                    if output:
+                        return output
+                    else:
+                        return "Command executed successfully (no output)"
+                else:
+                    error = result.get("error", "Unknown error")
+                    return f"Error executing PyMOL command: {error}"
+            else:
+                return f"PyMOL command executed successfully"
+        else:
+            return f"Error executing PyMOL command: {response.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error in get_pymol_output tool: {str(e)}")
+        return f"Error executing PyMOL command: {str(e)}"
 
 # Tool: Load a PDB file
 @mcp.tool()
@@ -218,6 +324,41 @@ def load_pdb(ctx: Context, pdb_id: str) -> str:
     except Exception as e:
         logger.error(f"Error in load_pdb tool: {str(e)}")
         return f"Error loading PDB {pdb_id}: {str(e)}"
+
+# Tool: Render an image
+@mcp.tool()
+def render_image(
+    ctx: Context,
+    filename: str,
+    width: int = 1200,
+    height: int = 900,
+    ray: bool = True,
+    quiet: bool = False
+) -> str:
+    """
+    Render an image in PyMOL.
+    
+    Parameters:
+    - filename: Output filename (with path)
+    - width: Image width in pixels
+    - height: Image height in pixels
+    - ray: Whether to use ray tracing (higher quality)
+    - quiet: Suppress PyMOL output
+    """
+    try:
+        pymol = get_pymol_connection()
+        # Create PyMOL code to render the image
+        code = f"cmd.png('{filename}', {width}, {height}, ray={int(ray)}, quiet={int(quiet)})"
+        response = pymol.send_command(code)
+        
+        if response.get("status") == "success":
+            return f"Image rendered to {filename}"
+        else:
+            return f"Error rendering image: {response.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error in render_image tool: {str(e)}")
+        return f"Error rendering image: {str(e)}"
+
 # Tool: Apply a visualization preset
 @mcp.tool()
 def apply_visualization(
@@ -277,6 +418,114 @@ def apply_visualization(
         logger.error(f"Error in apply_visualization tool: {str(e)}")
         return f"Error applying visualization: {str(e)}"
 
+# Additional tools for specific output capture
+
+@mcp.tool()
+def get_object_list(ctx: Context) -> str:
+    """
+    Get a list of all objects currently loaded in PyMOL
+    
+    Returns:
+    A list of all object names in the current PyMOL session
+    """
+    try:
+        pymol = get_pymol_connection()
+        code = """
+objects = cmd.get_names('objects')
+for obj in objects:
+    print(obj)
+"""
+        response = pymol.send_command(code)
+        
+        if response.get("status") == "success":
+            result = response.get("result", {})
+            if isinstance(result, dict) and "output" in result:
+                output = result["output"].strip()
+                if output:
+                    return f"Objects in PyMOL:\n{output}"
+                else:
+                    return "No objects currently loaded in PyMOL"
+            else:
+                return "Command executed but no object list returned"
+        else:
+            return f"Error getting object list: {response.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error in get_object_list tool: {str(e)}")
+        return f"Error getting object list: {str(e)}"
+
+@mcp.tool()
+def get_sequence(ctx: Context, selection: str = "all") -> str:
+    """
+    Get the sequence of a protein selection in PyMOL
+    
+    Parameters:
+    - selection: The PyMOL selection to get the sequence for (default: "all")
+    
+    Returns:
+    The amino acid sequence of the selected protein
+    """
+    try:
+        pymol = get_pymol_connection()
+        code = f"""
+from pymol import cmd
+sequence = cmd.get_fastastr('{selection}')
+print(sequence)
+"""
+        response = pymol.send_command(code)
+        
+        if response.get("status") == "success":
+            result = response.get("result", {})
+            if isinstance(result, dict) and "output" in result:
+                output = result["output"].strip()
+                if output:
+                    return f"Sequence for '{selection}':\n{output}"
+                else:
+                    return f"No sequence found for selection '{selection}'"
+            else:
+                return "Command executed but no sequence returned"
+        else:
+            return f"Error getting sequence: {response.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error in get_sequence tool: {str(e)}")
+        return f"Error getting sequence: {str(e)}"
+
+@mcp.tool()
+def calculate_distance(ctx: Context, atom1: str, atom2: str) -> str:
+    """
+    Calculate the distance between two atoms in PyMOL
+    
+    Parameters:
+    - atom1: First atom selection (e.g., "resi 10 and name CA")
+    - atom2: Second atom selection (e.g., "resi 20 and name CA")
+    
+    Returns:
+    The distance in Ångstroms between the selected atoms
+    """
+    try:
+        pymol = get_pymol_connection()
+        code = f"""
+from pymol import cmd
+distance = cmd.get_distance(atom1='{atom1}', atom2='{atom2}')
+print(f"Distance between {atom1} and {atom2}: {{distance:.2f}} Å")
+"""
+        response = pymol.send_command(code)
+        
+        if response.get("status") == "success":
+            result = response.get("result", {})
+            if isinstance(result, dict) and "output" in result:
+                output = result["output"].strip()
+                if output:
+                    return output
+                else:
+                    return f"Could not calculate distance between '{atom1}' and '{atom2}'"
+            else:
+                return "Command executed but no distance returned"
+        else:
+            return f"Error calculating distance: {response.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error in calculate_distance tool: {str(e)}")
+        return f"Error calculating distance: {str(e)}"
+
 # Prompt templates
 @mcp.prompt()
 def pymol_tips() -> str:
@@ -285,18 +534,27 @@ def pymol_tips() -> str:
 
 1. Always check if the PyMOL socket plugin is running before sending commands.
 
-2. The execute_pymol tool allows you to run any valid PyMOL Python code. Here are some examples:
-   - cmd.load('path/to/file.pdb')
-   - cmd.show('cartoon')
-   - cmd.color('red', 'resi 10')
+2. There are multiple ways to execute PyMOL commands and get output:
+
+   - execute_pymol: Run basic PyMOL code (may not capture all output)
+   - get_pymol_output: Specifically designed to capture standard output
+   - Specialized tools like get_object_list, get_sequence, etc. for common operations
 
 3. For common operations, use the specialized tools like:
    - load_pdb: Load PDB files directly from the PDB database
+   - render_image: Generate high-quality images
    - apply_visualization: Apply predefined visualization styles
+   - get_object_list: List all loaded objects
+   - get_sequence: Get the amino acid sequence of a protein
+   - calculate_distance: Measure the distance between atoms
 
-4. PyMOL commands are executed in the PyMOL environment and should use the cmd module.
+4. To capture output from PyMOL commands, use these patterns:
 
-5. Check the PyMOL console for any output produced by your commands.
+   - For simple values: Use the get_pymol_output tool with print statements
+   - For complex data: Store results in the special _result variable
+   - Example: `_result = cmd.get_names('objects')`
+
+5. Check the PyMOL console for any additional output not captured by the tools.
 
 6. When generating PyMOL code, ensure it's valid Python that imports necessary modules and uses proper syntax.
 """

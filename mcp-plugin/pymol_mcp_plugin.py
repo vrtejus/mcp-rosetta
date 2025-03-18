@@ -86,11 +86,14 @@ class SocketServer:
                                 command = json.loads(buffer.decode('utf-8'))
                                 buffer = b''  # Reset buffer
                                 
-                                # Process the command
-                                self._handle_command(command)
+                                # Process the command and get result
+                                result = self._handle_command(command)
                                 
-                                # Send response
-                                response = json.dumps({"status": "success", "result": "Command executed"})
+                                # Send response with result
+                                response = json.dumps({
+                                    "status": "success", 
+                                    "result": result if result else "Command executed"
+                                })
                                 self.client.sendall(response.encode('utf-8'))
                             except json.JSONDecodeError:
                                 # Incomplete JSON, continue receiving
@@ -136,7 +139,8 @@ class SocketServer:
         
         # Execute the PyMOL command if a callback is registered
         if self.command_callback and cmd_code:
-            self.command_callback(cmd_code)
+            result = self.command_callback(cmd_code)
+            return result
     
     def stop(self):
         """Stop the socket server"""
@@ -183,20 +187,45 @@ def make_dialog():
     form.input_port.setValue(current_port)
     update_status_label(form, "Not listening")
     
-    # Define a function to execute PyMOL commands
+    # Define a function to execute PyMOL commands and capture output
     def execute_pymol_command(code):
         try:
-            # Execute in PyMOL
+            # Execute in PyMOL with output capture
             print(f"Executing PyMOL command from MCP:\n{code}")
             
-            # Use exec for more complex code that might have functions, etc.
-            exec(code, {"cmd": cmd, "__builtins__": __builtins__})
+            # Add code to capture output
+            import io
+            from contextlib import redirect_stdout
             
-            return True
+            # Prepare the execution environment
+            exec_globals = {"cmd": cmd, "__builtins__": __builtins__}
+            
+            # Capture standard output
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                # Use exec for more complex code that might have functions, etc.
+                exec(code, exec_globals)
+            
+            # Get the captured output
+            output = output_buffer.getvalue()
+            
+            # If we have captured output, return it
+            if output:
+                print(f"Command output: {output}")
+                return {"executed": True, "output": output}
+            else:
+                # If there's no stdout, check if a result was assigned to a special variable
+                if '_result' in exec_globals:
+                    result = str(exec_globals['_result'])
+                    print(f"Command result: {result}")
+                    return {"executed": True, "output": result}
+                
+                return {"executed": True, "output": "Command executed successfully (no output)"}
         except Exception as e:
-            print(f"Error executing PyMOL command: {str(e)}")
+            error_msg = f"Error executing PyMOL command: {str(e)}"
+            print(error_msg)
             traceback.print_exc()
-            return False
+            return {"executed": False, "error": error_msg}
     
     # Callback for the "Start Listening" button
     def toggle_listening():
